@@ -2,9 +2,13 @@ import { Command } from "https://deno.land/x/cliffy@v0.25.7/command/mod.ts";
 import * as path from "https://deno.land/std@0.224.0/path/mod.ts";
 import * as fs from "jsr:@std/fs";
 import { walk } from "https://deno.land/std@0.224.0/fs/walk.ts";
+import { configList } from "./config.ts";
 
 // @deno-types="https://cdn.skypack.dev/fflate@0.8.2/lib/index.d.ts"
 import { unzipSync, zipSync } from "npm:fflate";
+
+// console.log("configList: ", configList);
+// Deno.exit(1);
 
 type LoginResultType = {
   accessToken: string;
@@ -35,6 +39,7 @@ const { options } = await new Command()
   .option("-P, --pass <pass:string>", "密码", { required: true })
   .option("-n, --importNS <importNS:string>", "导入的命名空间id")
   .option("-p, --importPath <importPath:string>", "导入的源配置目录")
+  .option("-i, --id <id:string>", "配置项id")
   .parse(Deno.args);
 
 const { prefix, user, pass, importNS, importPath } = options;
