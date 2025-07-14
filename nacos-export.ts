@@ -26,24 +26,22 @@ type NamespaceType = {
   type: number;
 };
 
-const { options } = await new Command()
+const cliffyRs = await new Command()
   .name("nacos-import")
   .version("0.1.0")
-  .description("导入本地 nacos 配置目录到远程 Nacos 服务器")
-  .option(
-    "-u, --prefix <prefix:string>",
-    "服务前缀如 http://10.1.160.221:8848",
-    { required: true }
+  .description(
+    "导出 nacos 到本地, 或者导入本地 nacos 配置目录到远程 Nacos 服务器"
   )
-  .option("-U, --user <user:string>", "用户名", { required: true })
-  .option("-P, --pass <pass:string>", "密码", { required: true })
+  .option("-i, --id <id:string>", "配置项id, 如果指定, 其余参数无效")
+  .option("-u, --prefix <prefix:string>", "服务前缀如 http://10.1.160.221:8848")
+  .option("-U, --user <user:string>", "用户名")
+  .option("-P, --pass <pass:string>", "密码")
   .option("-n, --importNS <importNS:string>", "导入的命名空间id")
   .option("-p, --importPath <importPath:string>", "导入的源配置目录")
-  .option("-i, --id <id:string>", "配置项id")
   .parse(Deno.args);
 
-const { prefix, user, pass, importNS, importPath } = options;
-console.log("url, user, pass: ", prefix, user, pass);
+const { id } = cliffyRs.options;
+let { prefix, user, pass, importNS, importPath } = cliffyRs.options;
 
 let loginState = {
   accessToken: "",
@@ -51,6 +49,36 @@ let loginState = {
   globalAdmin: true,
   username: "",
 };
+
+if (Deno.args.length === 0) {
+  cliffyRs.cmd.showHelp();
+  Deno.exit(1);
+}
+
+if (id) {
+  const config = configList.find((item) => item.id === id);
+  if (config) {
+    prefix = config.prefix;
+    user = config.user;
+    pass = config.pass;
+    importNS = config.importNS;
+    importPath = config.importPath;
+  } else {
+    console.error(`配置项 ${id} 不存在, 请检查`);
+    Deno.exit(1);
+  }
+} else {
+  if (!prefix) {
+    console.error("请指定服务前缀如: -u http://10.1.160.221:8848");
+    Deno.exit(1);
+  }
+  if (!user) {
+    console.error("请指定用户名如: -U nacos");
+  }
+  if (!pass) {
+    console.error("请指定密码如: -P 123456");
+  }
+}
 
 const url = new URL(prefix);
 const host = url.hostname;
