@@ -1,274 +1,308 @@
-import { Command } from "https://deno.land/x/cliffy@v0.25.7/command/mod.ts";
-import * as path from "https://deno.land/std@0.224.0/path/mod.ts";
-import * as fs from "jsr:@std/fs";
-import { walk } from "https://deno.land/std@0.224.0/fs/walk.ts";
-import { configList } from "./config.ts";
+import { Command } from 'https://deno.land/x/cliffy@v0.25.7/command/mod.ts'
+import * as path from 'https://deno.land/std@0.224.0/path/mod.ts'
+import * as fs from 'jsr:@std/fs'
+
+import type { ConfigItemType } from './config.sample.ts'
 
 // @deno-types="https://cdn.skypack.dev/fflate@0.8.2/lib/index.d.ts"
-import { unzipSync, zipSync } from "npm:fflate";
-
-// console.log("configList: ", configList);
-// Deno.exit(1);
+import { unzipSync, zipSync } from 'npm:fflate@0.8.2'
 
 type LoginResultType = {
-  accessToken: string;
-  tokenTtl: number;
-  globalAdmin: boolean;
-  username: string;
-};
+  accessToken: string
+  tokenTtl: number
+  globalAdmin: boolean
+  username: string
+}
 
 type NamespaceType = {
-  namespace: string;
-  namespaceShowName: string;
-  namespaceDesc: string;
-  quota: number;
-  configCount: number;
-  type: number;
-};
-
-const cliffyRs = await new Command()
-  .name("nacos-import")
-  .version("0.1.0")
-  .description(
-    "导出 nacos 到本地, 或者导入本地 nacos 配置目录到远程 Nacos 服务器"
-  )
-  .option("-i, --id <id:string>", "配置项id, 如果指定, 其余参数无效")
-  .option("-u, --prefix <prefix:string>", "服务前缀如 http://10.1.160.221:8848")
-  .option("-U, --user <user:string>", "用户名")
-  .option("-P, --pass <pass:string>", "密码")
-  .option("-n, --importNS <importNS:string>", "导入的命名空间id")
-  .option("-p, --importPath <importPath:string>", "导入的源配置目录")
-  .parse(Deno.args);
-
-const { id } = cliffyRs.options;
-let { prefix, user, pass, importNS, importPath } = cliffyRs.options;
+  namespace: string
+  namespaceShowName: string
+  namespaceDesc: string
+  quota: number
+  configCount: number
+  type: number
+}
 
 let loginState = {
-  accessToken: "",
+  accessToken: '',
   tokenTtl: 2971,
   globalAdmin: true,
-  username: "",
-};
-
-if (Deno.args.length === 0) {
-  cliffyRs.cmd.showHelp();
-  Deno.exit(1);
+  username: '',
 }
 
-if (id) {
-  const config = configList.find((item) => item.id === id);
-  if (config) {
-    prefix = config.prefix;
-    user = config.user;
-    pass = config.pass;
-    importNS = config.importNS;
-    importPath = config.importPath;
-  } else {
-    console.error(`配置项 ${id} 不存在, 请检查`);
-    Deno.exit(1);
-  }
-} else {
-  if (!prefix) {
-    console.error("请指定服务前缀如: -u http://10.1.160.221:8848");
-    Deno.exit(1);
-  }
-  if (!user) {
-    console.error("请指定用户名如: -U nacos");
-  }
-  if (!pass) {
-    console.error("请指定密码如: -P 123456");
-  }
-}
+// console.log(1);
+const cliffyRs = await new Command()
+  .name('nacos-import')
+  .version('0.1.0')
+  .description('导出 nacos 到本地, 或者导入本地 nacos 配置目录到远程 Nacos 服务器')
+  // .option('-i, --id <id:string>', '配置项id, 如果指定, 其余参数无效')
+  // .option('-u, --prefix <prefix:string>', '服务前缀如 http://10.1.160.221:8848')
+  // .option('-U, --user <user:string>', '用户名')
+  // .option('-P, --pass <pass:string>', '密码')
+  // .option('-n, --importNS <importNS:string>', '导入的命名空间id')
+  // .option('-p, --importPath <importPath:string>', '导入的源配置目录')
+  .action(function (options) {
+    this.showHelp()
+  })
+  .command('init', new Command().description('生成配置示例').action(copyConfigFile))
+  .command(
+    'export',
+    new Command()
+      .description('导出配置')
+      .option('-i, --id <id:string>', '配置项id, 如果指定, 其余参数无效', { required: true })
+      .action(async function (options) {
+        if (options.id) {
+          const configItem = await loadConfigFile(options.id)
+          // console.log('configItem: ', configItem)
+          await doLogin(configItem.prefix, configItem.user, configItem.pass)
+          await doExportAll(configItem.prefix)
+        } else {
+          this.showHelp()
+        }
+      })
+  )
+  .command(
+    'import',
+    new Command()
+      .description('导入配置')
+      .option('-i, --id <id:string>', '配置项id, 如果指定, 其余参数无效', { required: true })
+      .option(
+        '-n, --importNS <importNS:string>',
+        '导入的命名空间id, 配置指定, 或者命令行指定(高优先级)'
+      )
+      .option(
+        '-p, --importPath <importPath:string>',
+        '导入的源配置目录, 配置指定, 或者命令行指定(高优先级)'
+      )
+      .action(async function (options) {
+        if (options.id) {
+          const configItem = await loadConfigFile(options.id)
+          // console.log('configItem: ', configItem)
+          const importNS = options.importNS || configItem.importNS
+          const importPath = options.importPath || configItem.importPath
 
-const url = new URL(prefix);
-const host = url.hostname;
-const port = url.port || (url.protocol === "https:" ? "443" : "80");
-const dirName = `${host}_${port}`;
-console.log("dirName: ", dirName);
+          if (importPath && importNS) {
+            if (!fs.existsSync(importPath)) {
+              console.error(`❌ 源配置目录 ${importPath} 不存在`)
+              Deno.exit(1)
+            }
+            await doLogin(configItem.prefix, configItem.user, configItem.pass)
+            await doCreateNameSpace(configItem.prefix, importNS)
+            const namespaces = await doGetNamespaces(configItem.prefix)
+            console.log('namespaces: ', namespaces)
+            await doImport(configItem.prefix, importNS, importPath)
+          } else {
+            this.showHelp()
+            console.error(`❌ importNS: ${importNS}`)
+            console.error(`❌ importPath: ${importPath}`)
+          }
+        }
+      })
+  )
+  .parse(Deno.args)
+// console.log(3);
 
-await doLogin(prefix, user, pass);
-
-if (importNS) {
-  console.log(`开始导入`);
-  if (!importPath) {
-    console.error(
-      "请指定导入的源配置目录: -p 10.1.160.227_57102/ACRSA_PRO_ALPHA"
-    );
-    Deno.exit(1);
-  }
-
-  if (!fs.existsSync(importPath)) {
-    console.error(`源配置目录 ${importPath} 不存在`);
-    Deno.exit(1);
-  }
-
-  await doCreateNameSpace(prefix, importNS);
-  const namespaces = await doGetNamespaces(prefix);
-  console.log("namespaces: ", namespaces);
-  await doImport(prefix, importNS, importPath);
-} else {
-  console.log(`开始导出`);
-  const exportRoot = path.join(Deno.cwd(), `${dirName}`);
-  console.log("exportRoot: ", exportRoot);
-  Deno.mkdirSync(exportRoot, { recursive: true });
-  const namespaces = await doGetNamespaces(prefix);
-  console.log("namespaces: ", namespaces);
+async function doExportAll(prefix: string) {
+  console.log(`开始导出`)
+  const url = new URL(prefix)
+  const host = url.hostname
+  const port = url.port || (url.protocol === 'https:' ? '443' : '80')
+  const dirName = `${host}_${port}`
+  console.log('dirName: ', dirName)
+  const exportRoot = path.join(Deno.cwd(), `${dirName}`)
+  console.log('exportRoot: ', exportRoot)
+  Deno.mkdirSync(exportRoot, { recursive: true })
+  const namespaces = await doGetNamespaces(prefix)
+  console.log('namespaces: ', namespaces)
   for (const ns of namespaces) {
     if (ns.namespace) {
-      const namespaceExportRoot = path.join(exportRoot, ns.namespace);
-      Deno.mkdirSync(namespaceExportRoot, { recursive: true });
-      doExportOne(prefix, ns.namespace, namespaceExportRoot);
+      const namespaceExportRoot = path.join(exportRoot, ns.namespace)
+      Deno.mkdirSync(namespaceExportRoot, { recursive: true })
+      doExportOne(prefix, ns.namespace, namespaceExportRoot)
     }
   }
 }
 
+async function loadConfigFile(id: string) {
+  const localPath = Deno.cwd()
+  const targetPath = path.join(localPath, 'config.ts')
+  try {
+    const configModule = await import(targetPath)
+    const item = configModule.configList?.find((item) => item.id === id)
+    if (item) {
+      return item as ConfigItemType
+    } else {
+      console.error(`❌ 配置项 ${id} 不存在于文件 ${targetPath}, 请检查`)
+      Deno.exit(1)
+    }
+  } catch (error) {
+    if (error instanceof TypeError) {
+      console.error(`❌ 配置文件 ${targetPath} 不存在`)
+    } else {
+      console.error(error)
+    }
+    Deno.exit(1)
+  }
+}
+
+async function copyConfigFile() {
+  const localPath = Deno.cwd()
+  const resolved = import.meta.resolve('./config.sample.ts')
+  const realPath = path.fromFileUrl(resolved)
+  console.log('realPath: ', realPath)
+  const targetPath = path.join(localPath, 'config.ts')
+  console.log('targetPath: ', targetPath)
+  try {
+    await fs.copy(realPath, targetPath, { overwrite: false })
+    console.log(`✅ 示例配置已生成: ${targetPath}`)
+  } catch (error) {
+    console.error(`❌ 生成配置示例失败: ${error}`)
+  }
+}
+
 async function doLogin(serverPrefix: string, user: string, pass: string) {
-  const loginUrl = `${serverPrefix}/nacos/v1/auth/users/login`;
-  const params = new URLSearchParams();
-  params.append("username", user);
-  params.append("password", pass);
+  const loginUrl = `${serverPrefix}/nacos/v1/auth/users/login`
+  const params = new URLSearchParams()
+  params.append('username', user)
+  params.append('password', pass)
   const loginRes = await fetch(loginUrl, {
-    method: "POST",
+    method: 'POST',
     headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
+      'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: params.toString(),
-  });
+  })
 
   // console.log("loginRes: ", loginRes);
   if (loginRes.ok) {
-    loginState = (await loginRes.json()) as LoginResultType;
-    console.log("loginState: ", loginState);
+    loginState = (await loginRes.json()) as LoginResultType
+    console.log('loginState: ', loginState)
   }
 }
 
 async function doCreateNameSpace(serverPrefix: string, ns: string) {
-  const loginUrl = `${serverPrefix}/nacos/v1/console/namespaces`;
-  const params = new URLSearchParams();
-  params.append("customNamespaceId", ns);
-  params.append("namespaceName", ns);
-  params.append("namespaceDesc", ns);
-  params.append("namespaceId", "");
+  const loginUrl = `${serverPrefix}/nacos/v1/console/namespaces`
+  const params = new URLSearchParams()
+  params.append('customNamespaceId', ns)
+  params.append('namespaceName', ns)
+  params.append('namespaceDesc', ns)
+  params.append('namespaceId', '')
   const xhr1 = await fetch(loginUrl, {
-    method: "POST",
+    method: 'POST',
     headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
+      'Content-Type': 'application/x-www-form-urlencoded',
       accesstoken: loginState.accessToken,
     },
     body: params.toString(),
-  });
+  })
 
-  console.log("xhr1: ", xhr1);
+  console.log('xhr1: ', xhr1)
   if (xhr1.ok) {
-    const createJson = await xhr1.json();
-    console.log("createJson: ", createJson);
+    const createJson = await xhr1.json()
+    console.log('createJson: ', createJson)
   }
 }
 
 async function doImport(serverPrefix: string, ns: string, zipPath: string) {
-  const importUrl = new URL(`${serverPrefix}/nacos/v1/cs/configs`);
-  importUrl.searchParams.set("import", "true");
-  importUrl.searchParams.set("namespace", ns);
-  importUrl.searchParams.set("accessToken", loginState.accessToken);
-  importUrl.searchParams.set("username", loginState.username);
-  importUrl.searchParams.set("tenant", ns);
+  const importUrl = new URL(`${serverPrefix}/nacos/v1/cs/configs`)
+  importUrl.searchParams.set('import', 'true')
+  importUrl.searchParams.set('namespace', ns)
+  importUrl.searchParams.set('accessToken', loginState.accessToken)
+  importUrl.searchParams.set('username', loginState.username)
+  importUrl.searchParams.set('tenant', ns)
 
-  const zipData = await zipDirectory(zipPath);
-  // console.log("zipData: ", zipData);
-  const zipFile = new File([zipData], "aa.zip");
+  const zipData = await zipDirectory(zipPath)
+  console.log('zipData: ', zipData)
+  const zipFile = new File([zipData], 'aa.zip')
   // console.log("zipFile: ", zipFile);
 
-  const formData = new FormData();
-  formData.append("policy", "ABORT");
-  formData.append("file", zipFile);
+  const formData = new FormData()
+  formData.append('policy', 'ABORT')
+  formData.append('file', zipFile)
 
-  const postUrl = importUrl.toString();
-  console.log("postUrl: ", postUrl);
+  const postUrl = importUrl.toString()
+  console.log('postUrl: ', postUrl)
   const xhr1 = await fetch(postUrl, {
-    method: "POST",
+    method: 'POST',
     headers: {},
     body: formData,
-  });
+  })
 
   // console.log("xhr1: ", xhr1);
   if (xhr1.ok) {
-    const importJson = await xhr1.json();
-    console.log("importJson: ", importJson);
+    const importJson = await xhr1.json()
+    console.log('importJson: ', importJson)
   }
 }
 
 async function doGetNamespaces(serverPrefix: string) {
-  const loginUrl = `${serverPrefix}/nacos/v1/console/namespaces`;
+  const loginUrl = `${serverPrefix}/nacos/v1/console/namespaces`
   const loginRes = await fetch(loginUrl, {
-    method: "GET",
+    method: 'GET',
     headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
+      'Content-Type': 'application/x-www-form-urlencoded',
       accesstoken: loginState.accessToken,
     },
-  });
+  })
 
   if (loginRes.ok) {
-    const data1 = await loginRes.json();
-    return data1.data as NamespaceType[];
+    const data1 = await loginRes.json()
+    return data1.data as NamespaceType[]
   } else {
-    return [] as NamespaceType[];
+    return [] as NamespaceType[]
   }
 }
 
-async function doExportOne(
-  serverPrefix: string,
-  tenant: string,
-  exportRoot: string
-) {
-  const exportUrl1 = new URL("/nacos/v1/cs/configs", serverPrefix);
-  exportUrl1.searchParams.set("exportV2", "true");
-  exportUrl1.searchParams.set("tenant", tenant);
-  exportUrl1.searchParams.set("group", "");
-  exportUrl1.searchParams.set("appName", "");
-  exportUrl1.searchParams.set("dataId", "");
-  exportUrl1.searchParams.set("ids", "");
-  exportUrl1.searchParams.set("accessToken", loginState.accessToken);
-  exportUrl1.searchParams.set("username", loginState.username);
+async function doExportOne(serverPrefix: string, tenant: string, exportRoot: string) {
+  const exportUrl1 = new URL('/nacos/v1/cs/configs', serverPrefix)
+  exportUrl1.searchParams.set('exportV2', 'true')
+  exportUrl1.searchParams.set('tenant', tenant)
+  exportUrl1.searchParams.set('group', '')
+  exportUrl1.searchParams.set('appName', '')
+  exportUrl1.searchParams.set('dataId', '')
+  exportUrl1.searchParams.set('ids', '')
+  exportUrl1.searchParams.set('accessToken', loginState.accessToken)
+  exportUrl1.searchParams.set('username', loginState.username)
 
-  const exportUrl = exportUrl1.toString();
-  console.log("exportUrl: ", exportUrl);
+  const exportUrl = exportUrl1.toString()
+  console.log('exportUrl: ', exportUrl)
   const xhr1 = await fetch(exportUrl, {
-    method: "GET",
+    method: 'GET',
     headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
+      'Content-Type': 'application/x-www-form-urlencoded',
     },
-  });
+  })
 
   if (xhr1.ok) {
-    const data = new Uint8Array(await xhr1.arrayBuffer());
+    const data = new Uint8Array(await xhr1.arrayBuffer())
 
     // 保存 zip 文件
     // const exportRoot2 = path.join(exportRoot, `${tenant}.zip`);
     // await Deno.writeFile(exportRoot2, data);
 
     // 解压 zip 内容
-    const entries = unzipSync(data);
+    const entries = unzipSync(data)
     for (const [filename, file] of Object.entries(entries)) {
-      const destPath = path.join(exportRoot, filename);
-      if (file.length === 0) continue; // 跳过空文件夹（zip 不显式标记）
-      await fs.ensureDir(path.join(destPath, ".."));
-      await Deno.writeFile(destPath, file);
-      console.log(`✓ Extracted ${filename}`);
+      const destPath = path.join(exportRoot, filename)
+      if (file.length === 0) continue // 跳过空文件夹（zip 不显式标记）
+      await fs.ensureDir(path.join(destPath, '..'))
+      await Deno.writeFile(destPath, file)
+      console.log(`✓ Extracted ${filename}`)
     }
   }
 }
 
 async function zipDirectory(dirPath: string): Promise<Uint8Array> {
-  const files: Record<string, Uint8Array> = {};
+  const files: Record<string, Uint8Array> = {}
 
-  for await (const entry of walk(dirPath, { includeDirs: false })) {
-    const relPath = path.relative(dirPath, entry.path);
+  for await (const entry of fs.walk(dirPath, { includeDirs: false })) {
+    const relPath = path.relative(dirPath, entry.path)
     // console.log("relPath: ", relPath);
-    const fileData = await Deno.readFile(entry.path);
+    const fileData = await Deno.readFile(entry.path)
     // console.log("fileData: ", fileData);
-    files[relPath] = fileData;
+    files[relPath] = fileData
   }
 
-  const zipRs = zipSync(files);
-  return zipRs;
+  const zipRs = zipSync(files)
+  return zipRs
 }
