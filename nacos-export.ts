@@ -127,7 +127,7 @@ async function loadConfigFile(id: string) {
   const localPath = Deno.cwd()
   const targetPath = path.join(localPath, 'config.ts')
   try {
-    const configModule = await import(targetPath)
+    const configModule = await import(`file://${targetPath}`)
     const item = configModule.configList?.find((item) => item.id === id)
     if (item) {
       return item as ConfigItemType
@@ -147,14 +147,26 @@ async function loadConfigFile(id: string) {
 
 async function copyConfigFile() {
   const localPath = Deno.cwd()
-  const resolved = import.meta.resolve('./config.sample.ts')
-  const realPath = path.fromFileUrl(resolved)
-  console.log('realPath: ', realPath)
   const targetPath = path.join(localPath, 'config.ts')
   console.log('targetPath: ', targetPath)
+  if (fs.existsSync(targetPath)) {
+    console.error(`❌ 配置文件已经存在: ${targetPath}`)
+    Deno.exit(1)
+  }
+  const resolved = import.meta.resolve('./config.sample.ts')
   try {
-    await fs.copy(realPath, targetPath, { overwrite: false })
-    console.log(`✅ 示例配置已生成: ${targetPath}`)
+    if (resolved.startsWith('file://')) {
+      const realPath = path.fromFileUrl(resolved)
+      console.log('realPath: ', realPath)
+      await fs.copy(realPath, targetPath, { overwrite: false })
+      console.log(`✅ 示例配置已生成: ${targetPath}`)
+    } else {
+      const res = await fetch(resolved)
+      if (!res.ok) throw new Error(`下载失败: ${res.status} ${res.statusText}`)
+      const content = await res.text()
+      await Deno.writeTextFile(targetPath, content)
+      console.log(`✅ 示例配置下载成功: ${targetPath}`)
+    }
   } catch (error) {
     console.error(`❌ 生成配置示例失败: ${error}`)
   }
