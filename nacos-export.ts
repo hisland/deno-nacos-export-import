@@ -46,13 +46,22 @@ const cliffyRs = await new Command()
   })
   .command('init', new Command().description('生成配置示例').action(copyConfigFile))
   .command(
+    'list',
+    new Command().description('列出所有nacos链接').action(async function () {
+      const configList = await loadConfigFileAll()
+      for (const item of configList) {
+        console.log(`${item.id} ${item.prefix}/nacos/`)
+      }
+    })
+  )
+  .command(
     'export',
     new Command()
       .description('导出配置')
       .option('-i, --id <id:string>', '配置项id, 如果指定, 其余参数无效', { required: true })
       .action(async function (options) {
         if (options.id) {
-          const configItem = await loadConfigFile(options.id)
+          const configItem = await loadConfigFileOne(options.id)
           // console.log('configItem: ', configItem)
           await doLogin(configItem.prefix, configItem.user, configItem.pass)
           await doExportAll(configItem.prefix)
@@ -76,7 +85,7 @@ const cliffyRs = await new Command()
       )
       .action(async function (options) {
         if (options.id) {
-          const configItem = await loadConfigFile(options.id)
+          const configItem = await loadConfigFileOne(options.id)
           // console.log('configItem: ', configItem)
           const importNS = options.importNS || configItem.importNS
           const importPath = options.importPath || configItem.importPath
@@ -123,24 +132,29 @@ async function doExportAll(prefix: string) {
   }
 }
 
-async function loadConfigFile(id: string) {
+async function loadConfigFileAll(): Promise<ConfigItemType[]> {
   const localPath = Deno.cwd()
   const targetPath = path.join(localPath, 'config.ts')
   try {
     const configModule = await import(`file://${targetPath}`)
-    const item = configModule.configList?.find((item) => item.id === id)
-    if (item) {
-      return item as ConfigItemType
-    } else {
-      console.error(`❌ 配置项 ${id} 不存在于文件 ${targetPath}, 请检查`)
-      Deno.exit(1)
-    }
+    return configModule.configList ?? []
   } catch (error) {
     if (error instanceof TypeError) {
       console.error(`❌ 配置文件 ${targetPath} 不存在`)
     } else {
       console.error(error)
     }
+    Deno.exit(1)
+  }
+}
+
+async function loadConfigFileOne(id: string) {
+  const configList = await loadConfigFileAll()
+  const item = configList.find((item) => item.id === id)
+  if (item) {
+    return item as ConfigItemType
+  } else {
+    console.error(`❌ 配置项 ${id} 不存在于文件 ${targetPath}, 请检查`)
     Deno.exit(1)
   }
 }
