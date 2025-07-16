@@ -33,7 +33,7 @@ let loginState = {
 // console.log(1);
 const cliffyRs = await new Command()
   .name('nacos-import')
-  .version('0.1.0')
+  .version('1.0.0')
   .description('导出 nacos 到本地, 或者导入本地 nacos 配置目录到远程 Nacos 服务器')
   // .option('-i, --id <id:string>', '配置项id, 如果指定, 其余参数无效')
   // .option('-u, --prefix <prefix:string>', '服务前缀如 http://10.1.160.221:8848')
